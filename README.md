@@ -1,92 +1,78 @@
 # ansible-windows-bootstrap
 
-Bootstrap a Windows host for remote management with Ansible over WinRM, and install a non-interactive Windows/software updater script for Ansible to execute later.
-
-## Features
-
-- Prompts for a local automation username and password without echoing the password.
-- Creates the local account, or updates and enables it if it already exists.
-- Adds the account to the local **Administrators** group.
-- Enables WinRM and configures the service to start automatically.
-- Uses WinRM over HTTP with NTLM/Negotiate message encryption; does not enable Basic authentication or unencrypted WinRM traffic.
-- Enables the Windows Remote Management firewall rule.
-- Configures the Windows local-account remote token policy required by some WinRM local-administrator setups.
-- Downloads `upgrader.ps1` to `%ProgramData%\Ansible\upgrader.ps1`.
-- The upgrader is designed for non-interactive execution: no GUI restart prompt and no `pause`.
+Prepare a Windows host for remote administration with Ansible. The bootstrap creates a local administrator account, installs and enables OpenSSH Server, configures WinRM, and installs the Windows updater script.
 
 ## Requirements
 
 - Windows PowerShell 5.1 or later.
-- Run the bootstrap in an **elevated PowerShell session** (Run as administrator).
-- Network access to GitHub and, when updating, Microsoft/WinGet package sources.
-- Supported Windows versions must include the PowerShell cmdlets used by the script (`Get-LocalUser`, `New-LocalUser`, and `Get-LocalGroupMember`).
+- Run bootstrap from an elevated PowerShell session.
+- Internet access to download the OpenSSH Windows capability, the updater script, and (when updating) packages from Microsoft/WinGet sources.
 
-## Quick start
+## Bootstrap
 
-Open **PowerShell as Administrator**, then run:
+The script accepts the username and password as parameters. It also prompts for either value if omitted.
 
-```powershell
-irm https://raw.githubusercontent.com/Michdo93/ansible-windows-bootstrap/main/bootstrap.ps1 | iex
-```
-
-The script asks for the local account name, password, and password confirmation. The password is read as a `SecureString`; it is not passed as a command-line argument or written to the script.
-
-> Review the script before piping a remote script into `iex`. For production, pin the URL to a reviewed commit or download and inspect the script first. This command executes the current contents of the `main` branch with administrator privileges.
-
-## What gets configured?
-
-### Local account
-
-The account is a local Windows account and is added to the built-in Administrators group. This is required for general system maintenance and installing Windows updates. Treat the credentials as privileged secrets.
-
-### WinRM
-
-The bootstrap enables PowerShell remoting and the standard WinRM HTTP listener on TCP port 5985. It disables Basic authentication and keeps `AllowUnencrypted` disabled.
-
-NTLM/Negotiate encrypts WinRM message contents even when the transport is HTTP, but the listener should still be restricted to trusted management hosts/subnets. For untrusted networks, configure WinRM over HTTPS (TCP 5986) with a valid certificate and suitable firewall rules. Do not expose WinRM directly to the public Internet.
-
-## Installed updater
-
-The bootstrap downloads the updater from:
-
-`https://raw.githubusercontent.com/Michdo93/ansible-windows-bootstrap/main/upgrader.ps1`
-
-Default install path:
-
-`C:\ProgramData\Ansible\upgrader.ps1`
-
-The script attempts to update applications with WinGet and Windows/Microsoft updates with the `PSWindowsUpdate` module. It is intended for unattended use and does not show a GUI dialog or wait for keyboard input.
-
-Run it from an elevated PowerShell session:
+Download the script, inspect it, then run:
 
 ```powershell
-& "$env:ProgramData\Ansible\upgrader.ps1"
+.ootstrap.ps1 -Username sysadmin -Password 'change-this-password'
 ```
 
-To allow it to reboot the host when a reboot is pending:
+For a prompted password, omit `-Password`:
 
 ```powershell
-& "$env:ProgramData\Ansible\upgrader.ps1" -RebootIfRequired
+.ootstrap.ps1 -Username sysadmin
 ```
 
-To skip one update mechanism:
+A password passed on the command line can be visible in shell history and process inspection. Use a unique credential and remove it from shell history after use, or let the script prompt.
+
+The bootstrap:
+
+- Creates or updates and enables the local account, then adds it to the built-in Administrators group.
+- Installs the Windows OpenSSH Server capability, sets the `sshd` service to Automatic, starts it, and enables inbound TCP 22.
+- Enables WinRM with its service set to Automatic for Ansible Windows modules.
+- Downloads `upgrader.ps1` to `C:\ProgramData\Ansible\upgrader.ps1`.
+
+Connect with SSH using the local administrator account:
+
+```sh
+ssh sysadmin@HOSTNAME_OR_IP
+```
+
+The account receives administrator permissions. Restrict TCP 22 and WinRM TCP 5985 to trusted management hosts or networks. Do not expose them directly to the public Internet.
+
+## Run the updater
+
+The updater requires an elevated Administrator session. After SSH login as the provisioned local administrator, run:
 
 ```powershell
-& "$env:ProgramData\Ansible\upgrader.ps1" -SkipWinget
-& "$env:ProgramData\Ansible\upgrader.ps1" -SkipWindowsUpdate
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\Ansible\upgrader.ps1
 ```
 
-WinGet availability and behavior can vary by Windows edition, user context, package source, and installed applications. Driver delivery also depends on the drivers made available by Windows Update and the device vendor.
+To reboot automatically if an update requires it:
 
-## Ansible inventory example
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\Ansible\upgrader.ps1 -RebootIfRequired
+```
 
-Install the `ansible.windows` collection on the Ansible controller:
+Skip an update mechanism when needed:
 
-```bash
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\Ansible\upgrader.ps1 -SkipWinget
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\Ansible\upgrader.ps1 -SkipWindowsUpdate
+```
+
+The updater installs the `PSWindowsUpdate` PowerShell module and NuGet provider when missing. WinGet application upgrades are attempted when `winget.exe` is available in the account's environment. WinGet may be unavailable in some Windows editions or remote account contexts.
+
+## Ansible
+
+The Windows modules continue to use WinRM. Install the collection on the Ansible controller:
+
+```sh
 ansible-galaxy collection install ansible.windows
 ```
 
-Example inventory for a local account using NTLM:
+Example inventory using WinRM:
 
 ```ini
 [windows]
@@ -95,45 +81,21 @@ win01 ansible_host=192.168.0.50
 [windows:vars]
 ansible_connection=winrm
 ansible_port=5985
-ansible_user=win01\\ansible
+ansible_user=win01\sysadmin
 ansible_password=REPLACE_WITH_A_SECRET
 ansible_winrm_transport=ntlm
-ansible_winrm_server_cert_validation=ignore
 ```
 
-Use Ansible Vault or another secrets manager for `ansible_password`; do not commit real credentials to the inventory. The certificate-validation setting shown is typically relevant to HTTPS configurations and can be omitted for this HTTP example.
+Keep the password in Ansible Vault or another secrets manager. WinRM HTTP with NTLM encrypts message contents, but TCP 5985 should be limited to trusted management sources. For public or untrusted networks, use WinRM HTTPS with a valid certificate.
 
-Test connectivity:
+SSH is enabled for shell access and SSH-based automation. The supplied local account is an Administrator, which is required for the updater's system-wide operations. Use Ansible's Windows modules over WinRM where supported.
 
-```bash
-ansible windows -i inventory.ini -m ansible.windows.win_ping
-```
+## Security
 
-Execute the installed updater:
-
-```yaml
----
-- name: Update Windows hosts
-  hosts: windows
-  tasks:
-    - name: Run the Windows updater
-      ansible.windows.win_powershell:
-        script: |
-          & "$env:ProgramData\Ansible\upgrader.ps1"
-      register: update_result
-```
-
-Plan reboots explicitly in Ansible. Do not pass `-RebootIfRequired` unless a reboot during the playbook run is acceptable.
-
-## Security notes
-
-- The automation account is a local administrator. Anyone who obtains its credentials can administer the host.
-- `LocalAccountTokenFilterPolicy=1` relaxes remote UAC token filtering for local accounts. This has security implications; restrict WinRM to trusted management hosts/subnets and use a dedicated credential.
-- Restrict TCP 5985 to the Ansible controller or trusted management subnet.
-- Prefer a dedicated automation secret per host or a managed secret solution; avoid shared default passwords.
-- For production networks, prefer WinRM HTTPS with certificate validation.
-- Inspect scripts downloaded from GitHub before running them with administrator privileges.
-- The bootstrap installs the updater from the repository's `main` branch by default. Pin a reviewed commit if you require reproducible deployments.
+- The automation account has full local administrator access. Protect its password and any SSH private keys.
+- Restrict inbound SSH and WinRM to trusted management sources.
+- Review scripts before running them with administrator privileges.
+- For repeatable deployments, pin the updater URL to a reviewed commit instead of tracking the repository's `main` branch.
 
 ## Repository layout
 
