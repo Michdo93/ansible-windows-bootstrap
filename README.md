@@ -15,13 +15,13 @@ The script accepts the username and password as parameters. It also prompts for 
 Download the script, inspect it, then run:
 
 ```powershell
-.ootstrap.ps1 -Username sysadmin -Password 'change-this-password'
+.\bootstrap.ps1 -Username sysadmin -Password 'change-this-password'
 ```
 
 For a prompted password, omit `-Password`:
 
 ```powershell
-.ootstrap.ps1 -Username sysadmin
+.\bootstrap.ps1 -Username sysadmin
 ```
 
 A password passed on the command line can be visible in shell history and process inspection. Use a unique credential and remove it from shell history after use, or let the script prompt.
