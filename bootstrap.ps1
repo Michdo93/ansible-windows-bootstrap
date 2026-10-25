@@ -52,6 +52,19 @@ $sshCapability = Get-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0'
 if ($sshCapability.State -ne 'Installed') { Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' | Out-Null }
 Get-Service -Name sshd -ErrorAction Stop | Out-Null
 Set-Service -Name sshd -StartupType Automatic
+$sshdConfig = Join-Path $env:ProgramData 'ssh\sshd_config'
+if (Test-Path -LiteralPath $sshdConfig) {
+    $configLines = Get-Content -LiteralPath $sshdConfig
+    $passwordAuthConfigured = $false
+    $configLines = @($configLines | ForEach-Object {
+        if ($_ -match '^\s*#?\s*PasswordAuthentication\s+') {
+            $passwordAuthConfigured = $true
+            'PasswordAuthentication yes'
+        } else { $_ }
+    })
+    if (-not $passwordAuthConfigured) { $configLines += 'PasswordAuthentication yes' }
+    Set-Content -LiteralPath $sshdConfig -Value $configLines -Encoding ascii
+}
 Start-Service -Name sshd
 $sshFirewallRule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
 if ($sshFirewallRule) {
