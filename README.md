@@ -24,6 +24,22 @@ For a prompted password, omit `-Password`:
 .\bootstrap.ps1 -Username sysadmin
 ```
 
+### Run directly from GitHub
+
+In an elevated PowerShell session, you can download and invoke the script as a ScriptBlock. Pass parameters after the ScriptBlock expression:
+
+```powershell
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/Michdo93/ansible-windows-bootstrap/main/bootstrap.ps1'))) -Username 'sysadmin' -Password 'change-this-password'
+```
+
+To let the script prompt for the password, omit `-Password`:
+
+```powershell
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/Michdo93/ansible-windows-bootstrap/main/bootstrap.ps1'))) -Username 'sysadmin'
+```
+
+This is the PowerShell equivalent of downloading and running a script in one command. Unlike piping directly to `iex`, the ScriptBlock form lets you pass the script's parameters. Review the script before running it with administrator privileges. A password supplied on the command line may be visible in shell history and process inspection; omitting it uses the secure prompt.
+
 A password passed on the command line can be visible in shell history and process inspection. Use a unique credential and remove it from shell history after use, or let the script prompt.
 
 The bootstrap:
