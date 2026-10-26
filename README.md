@@ -44,16 +44,20 @@ A password passed on the command line can be visible in shell history and proces
 
 The bootstrap:
 
-- Creates or updates and enables the local account, then adds it to the built-in Administrators group.
-- Installs the Windows OpenSSH Server capability, sets the `sshd` service to Automatic, starts it, and enables inbound TCP 22.
+- Creates or updates and enables the local account, sets its password to never expire, then adds it to the built-in Administrators group.
+- Windows has no Unix `root` account. The local Administrators membership gives this account the equivalent administrative access over SSH.
+- Installs the Windows OpenSSH Server capability, enables password authentication, sets the `sshd` service to Automatic, starts it, and enables inbound TCP 22.
+- Sets Windows PowerShell as the default SSH shell, so an SSH connection opens PowerShell instead of CMD.
 - Enables WinRM with its service set to Automatic for Ansible Windows modules.
 - Downloads `upgrader.ps1` to `C:\ProgramData\Ansible\upgrader.ps1`.
 
-Connect with SSH using the local administrator account:
+Connect with SSH using the local administrator account and the password configured during bootstrap:
 
 ```sh
 ssh sysadmin@HOSTNAME_OR_IP
 ```
+
+The interactive SSH session opens Windows PowerShell by default. SSH password authentication is enabled by the bootstrap. The account's password does not expire; use a strong, unique password and rotate it according to your lab's credential policy.
 
 The account receives administrator permissions. Restrict TCP 22 and WinRM TCP 5985 to trusted management hosts or networks. Do not expose them directly to the public Internet.
 

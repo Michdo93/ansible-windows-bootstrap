@@ -38,9 +38,9 @@ $Password = $null
 
 $user = Get-LocalUser -Name $Username -ErrorAction SilentlyContinue
 if ($null -eq $user) {
-    New-LocalUser -Name $Username -Password $securePassword -Description 'Local account for Ansible automation' -PasswordNeverExpires:$false | Out-Null
+    New-LocalUser -Name $Username -Password $securePassword -Description 'Local account for Ansible automation' -PasswordNeverExpires:$true | Out-Null
 } else {
-    Set-LocalUser -Name $Username -Password $securePassword
+    Set-LocalUser -Name $Username -Password $securePassword -PasswordNeverExpires $true
     Enable-LocalUser -Name $Username
 }
 $administratorsGroup = (Get-LocalGroup -SID 'S-1-5-32-544').Name
@@ -65,7 +65,19 @@ if (Test-Path -LiteralPath $sshdConfig) {
     if (-not $passwordAuthConfigured) { $configLines += 'PasswordAuthentication yes' }
     Set-Content -LiteralPath $sshdConfig -Value $configLines -Encoding ascii
 }
-Start-Service -Name sshd
+# Use Windows PowerShell as the default shell for interactive and remote SSH commands.
+$openSshRegistryPath = 'HKLM:\SOFTWARE\OpenSSH'
+New-Item -Path $openSshRegistryPath -Force | Out-Null
+$powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) { throw "Windows PowerShell was not found at $powerShellPath" }
+New-ItemProperty -Path $openSshRegistryPath -Name DefaultShell -Value $powerShellPath -PropertyType String -Force | Out-Null
+
+$sshService = Get-Service -Name sshd
+if ($sshService.Status -eq 'Running') {
+    Restart-Service -Name sshd -Force
+} else {
+    Start-Service -Name sshd
+}
 $sshFirewallRule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
 if ($sshFirewallRule) {
     Enable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP'
