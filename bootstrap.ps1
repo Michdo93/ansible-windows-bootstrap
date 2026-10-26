@@ -38,9 +38,9 @@ $Password = $null
 
 $user = Get-LocalUser -Name $Username -ErrorAction SilentlyContinue
 if ($null -eq $user) {
-    New-LocalUser -Name $Username -Password $securePassword -Description 'Local account for Ansible automation' -PasswordNeverExpires:$false | Out-Null
+    New-LocalUser -Name $Username -Password $securePassword -Description 'Local account for Ansible automation' -PasswordNeverExpires:$true | Out-Null
 } else {
-    Set-LocalUser -Name $Username -Password $securePassword
+    Set-LocalUser -Name $Username -Password $securePassword -PasswordNeverExpires $true
     Enable-LocalUser -Name $Username
 }
 $administratorsGroup = (Get-LocalGroup -SID 'S-1-5-32-544').Name
@@ -53,19 +53,49 @@ if ($sshCapability.State -ne 'Installed') { Add-WindowsCapability -Online -Name 
 Get-Service -Name sshd -ErrorAction Stop | Out-Null
 Set-Service -Name sshd -StartupType Automatic
 $sshdConfig = Join-Path $env:ProgramData 'ssh\sshd_config'
-if (Test-Path -LiteralPath $sshdConfig) {
-    $configLines = Get-Content -LiteralPath $sshdConfig
-    $passwordAuthConfigured = $false
-    $configLines = @($configLines | ForEach-Object {
-        if ($_ -match '^\s*#?\s*PasswordAuthentication\s+') {
-            $passwordAuthConfigured = $true
-            'PasswordAuthentication yes'
-        } else { $_ }
-    })
-    if (-not $passwordAuthConfigured) { $configLines += 'PasswordAuthentication yes' }
-    Set-Content -LiteralPath $sshdConfig -Value $configLines -Encoding ascii
+if (-not (Test-Path -LiteralPath $sshdConfig -PathType Leaf)) {
+    throw "OpenSSH configuration file was not found at $sshdConfig"
 }
-Start-Service -Name sshd
+$configLines = @(Get-Content -LiteralPath $sshdConfig)
+$updatedConfig = [System.Collections.Generic.List[string]]::new()
+$passwordAuthConfigured = $false
+foreach ($line in $configLines) {
+    # Add the global directive before any Match block; also override any
+    # existing PasswordAuthentication directives, including Match-specific ones.
+    if (-not $passwordAuthConfigured -and $line -match '^\s*Match\s+') {
+        $updatedConfig.Add('PasswordAuthentication yes')
+        $passwordAuthConfigured = $true
+    }
+    if ($line -match '^\s*#?\s*PasswordAuthentication\s+') {
+        $updatedConfig.Add('PasswordAuthentication yes')
+        $passwordAuthConfigured = $true
+    } else {
+        $updatedConfig.Add($line)
+    }
+}
+if (-not $passwordAuthConfigured) { $updatedConfig.Add('PasswordAuthentication yes') }
+Set-Content -LiteralPath $sshdConfig -Value $updatedConfig -Encoding ascii
+$sshdExecutable = Join-Path $env:SystemRoot 'System32\OpenSSH\sshd.exe'
+if (-not (Test-Path -LiteralPath $sshdExecutable -PathType Leaf)) {
+    throw "OpenSSH server executable was not found at $sshdExecutable"
+}
+$sshdValidation = & $sshdExecutable -t -f $sshdConfig 2>&1
+if ($LASTEXITCODE -ne 0) {
+    throw "OpenSSH configuration validation failed: $sshdValidation"
+}
+# Use Windows PowerShell as the default shell for interactive and remote SSH commands.
+$openSshRegistryPath = 'HKLM:\SOFTWARE\OpenSSH'
+New-Item -Path $openSshRegistryPath -Force | Out-Null
+$powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) { throw "Windows PowerShell was not found at $powerShellPath" }
+New-ItemProperty -Path $openSshRegistryPath -Name DefaultShell -Value $powerShellPath -PropertyType String -Force | Out-Null
+
+$sshService = Get-Service -Name sshd
+if ($sshService.Status -eq 'Running') {
+    Restart-Service -Name sshd -Force
+} else {
+    Start-Service -Name sshd
+}
 $sshFirewallRule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
 if ($sshFirewallRule) {
     Enable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP'
