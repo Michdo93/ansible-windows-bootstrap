@@ -53,17 +53,35 @@ if ($sshCapability.State -ne 'Installed') { Add-WindowsCapability -Online -Name 
 Get-Service -Name sshd -ErrorAction Stop | Out-Null
 Set-Service -Name sshd -StartupType Automatic
 $sshdConfig = Join-Path $env:ProgramData 'ssh\sshd_config'
-if (Test-Path -LiteralPath $sshdConfig) {
-    $configLines = Get-Content -LiteralPath $sshdConfig
-    $passwordAuthConfigured = $false
-    $configLines = @($configLines | ForEach-Object {
-        if ($_ -match '^\s*#?\s*PasswordAuthentication\s+') {
-            $passwordAuthConfigured = $true
-            'PasswordAuthentication yes'
-        } else { $_ }
-    })
-    if (-not $passwordAuthConfigured) { $configLines += 'PasswordAuthentication yes' }
-    Set-Content -LiteralPath $sshdConfig -Value $configLines -Encoding ascii
+if (-not (Test-Path -LiteralPath $sshdConfig -PathType Leaf)) {
+    throw "OpenSSH configuration file was not found at $sshdConfig"
+}
+$configLines = @(Get-Content -LiteralPath $sshdConfig)
+$updatedConfig = [System.Collections.Generic.List[string]]::new()
+$passwordAuthConfigured = $false
+foreach ($line in $configLines) {
+    # Add the global directive before any Match block; also override any
+    # existing PasswordAuthentication directives, including Match-specific ones.
+    if (-not $passwordAuthConfigured -and $line -match '^\s*Match\s+') {
+        $updatedConfig.Add('PasswordAuthentication yes')
+        $passwordAuthConfigured = $true
+    }
+    if ($line -match '^\s*#?\s*PasswordAuthentication\s+') {
+        $updatedConfig.Add('PasswordAuthentication yes')
+        $passwordAuthConfigured = $true
+    } else {
+        $updatedConfig.Add($line)
+    }
+}
+if (-not $passwordAuthConfigured) { $updatedConfig.Add('PasswordAuthentication yes') }
+Set-Content -LiteralPath $sshdConfig -Value $updatedConfig -Encoding ascii
+$sshdExecutable = Join-Path $env:SystemRoot 'System32\OpenSSH\sshd.exe'
+if (-not (Test-Path -LiteralPath $sshdExecutable -PathType Leaf)) {
+    throw "OpenSSH server executable was not found at $sshdExecutable"
+}
+$sshdValidation = & $sshdExecutable -t -f $sshdConfig 2>&1
+if ($LASTEXITCODE -ne 0) {
+    throw "OpenSSH configuration validation failed: $sshdValidation"
 }
 # Use Windows PowerShell as the default shell for interactive and remote SSH commands.
 $openSshRegistryPath = 'HKLM:\SOFTWARE\OpenSSH'
