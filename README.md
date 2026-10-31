@@ -10,56 +10,33 @@ Prepare a Windows host for remote administration with Ansible. The bootstrap cre
 
 ## Bootstrap
 
-The script accepts the username and password as parameters. It also prompts for either value if omitted.
+Normally [ssh-ansible-bootstrap-manager](https://github.com/Michdo93/ssh-ansible-bootstrap-manager) / [ansible-inventory-generator](https://github.com/Michdo93/ansible-inventory-generator) upload this script over SSH (SFTP) and run it elevated, passing the account name, password and the control node's SSH public key. The password is handed over in a temporary file that is deleted immediately, not on the command line.
 
-Download the script, inspect it, then run:
-
-```powershell
-.\bootstrap.ps1 -Username sysadmin -Password 'change-this-password'
-```
-
-For a prompted password, omit `-Password`:
+Manual run from an elevated PowerShell:
 
 ```powershell
-.\bootstrap.ps1 -Username sysadmin
+.\bootstrap.ps1 -Username ansible -PublicKey 'ssh-ed25519 AAAA... ansible@controlnode'
 ```
 
-### Run directly from GitHub
-
-In an elevated PowerShell session, you can download and invoke the script as a ScriptBlock. Pass parameters after the ScriptBlock expression:
+Without `-Password` the script prompts securely (twice). Run directly from GitHub:
 
 ```powershell
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/Michdo93/ansible-windows-bootstrap/main/bootstrap.ps1'))) -Username 'sysadmin' -Password 'change-this-password'
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/Michdo93/ansible-windows-bootstrap/main/bootstrap.ps1'))) -Username 'ansible' -PublicKey 'ssh-ed25519 AAAA...'
 ```
-
-To let the script prompt for the password, omit `-Password`:
-
-```powershell
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/Michdo93/ansible-windows-bootstrap/main/bootstrap.ps1'))) -Username 'sysadmin'
-```
-
-This is the PowerShell equivalent of downloading and running a script in one command. Unlike piping directly to `iex`, the ScriptBlock form lets you pass the script's parameters. Review the script before running it with administrator privileges. A password supplied on the command line may be visible in shell history and process inspection; omitting it uses the secure prompt.
-
-A password passed on the command line can be visible in shell history and process inspection. Use a unique credential and remove it from shell history after use, or let the script prompt.
 
 The bootstrap:
 
-- Creates or updates and enables the local account, sets its password to never expire, then adds it to the built-in Administrators group.
-- Windows has no Unix `root` account. The local Administrators membership gives this account the equivalent administrative access over SSH.
-- Installs the Windows OpenSSH Server capability, enables password authentication, sets the `sshd` service to Automatic, starts it, and enables inbound TCP 22.
-- Sets Windows PowerShell as the default SSH shell, so an SSH connection opens PowerShell instead of CMD.
-- Enables WinRM with its service set to Automatic for Ansible Windows modules.
+- Creates or updates and enables the local account (password never expires) and adds it to the built-in Administrators group (by SID, works on localized Windows).
+- Installs the OpenSSH Server capability, sets `sshd` to Automatic, enables password authentication, opens TCP 22 and sets Windows PowerShell as the default SSH shell.
+- Installs `-PublicKey` in `C:\ProgramData\ssh\administrators_authorized_keys` (the file OpenSSH uses for administrators), restricts its ACL to SYSTEM and Administrators, and restores the `Match Group administrators` block in `sshd_config` if it was removed.
+- Enables WinRM (Kerberos/Negotiate, no Basic, no unencrypted traffic).
 - Downloads `upgrader.ps1` to `C:\ProgramData\Ansible\upgrader.ps1`.
 
-Connect with SSH using the local administrator account and the password configured during bootstrap:
+Afterwards the control node logs in without a password:
 
 ```sh
-ssh sysadmin@HOSTNAME_OR_IP
+ssh ansible@HOSTNAME_OR_IP
 ```
-
-The interactive SSH session opens Windows PowerShell by default. SSH password authentication is enabled by the bootstrap. The account's password does not expire; use a strong, unique password and rotate it according to your lab's credential policy.
-
-The account receives administrator permissions. Restrict TCP 22 and WinRM TCP 5985 to trusted management hosts or networks. Do not expose them directly to the public Internet.
 
 ## Run the updater
 
@@ -86,29 +63,32 @@ The updater installs the `PSWindowsUpdate` PowerShell module and NuGet provider 
 
 ## Ansible
 
-The Windows modules continue to use WinRM. Install the collection on the Ansible controller:
-
-```sh
-ansible-galaxy collection install ansible.windows
-```
-
-Example inventory using WinRM:
+The inventory generator writes for Windows hosts (no password in clear text):
 
 ```ini
-[windows]
-win01 ansible_host=192.168.0.50
-
-[windows:vars]
-ansible_connection=winrm
-ansible_port=5985
-ansible_user=win01\sysadmin
-ansible_password=REPLACE_WITH_A_SECRET
-ansible_winrm_transport=ntlm
+win01 ansible_host=192.168.0.50 ansible_port=22 ansible_user=ansible
 ```
 
-Keep the password in Ansible Vault or another secrets manager. WinRM HTTP with NTLM encrypts message contents, but TCP 5985 should be limited to trusted management sources. For public or untrusted networks, use WinRM HTTPS with a valid certificate.
+`host_vars/win01/vars.yml`:
 
-SSH is enabled for shell access and SSH-based automation. The supplied local account is an Administrator, which is required for the updater's system-wide operations. Use Ansible's Windows modules over WinRM where supported.
+```yaml
+ansible_connection: ssh
+ansible_shell_type: powershell
+ansible_become_method: runas
+ansible_become_user: "ansible"
+ansible_become_password: "{{ vault_ansible_become_password }}"
+```
+
+`host_vars/win01/vault.yml` is encrypted with `ansible-vault`. SSH authenticates with the key; `runas` with the vaulted password gives tasks a full interactive-equivalent token, which Windows Update and similar APIs require. Run the updater with:
+
+```yaml
+- name: Install updates
+  ansible.windows.win_powershell:
+    script: '& C:\ProgramData\Ansible\upgrader.ps1 -RebootIfRequired'
+  become: true
+```
+
+Install the collection on the control node: `ansible-galaxy collection install ansible.windows`. WinRM stays enabled if you prefer `ansible_connection: winrm`; keep its password in Ansible Vault as well.
 
 ## Security
 

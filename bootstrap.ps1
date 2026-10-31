@@ -3,6 +3,9 @@
 param(
     [string]$Username,
     [string]$Password,
+    # Public key of the Ansible control node (e.g. 'ssh-ed25519 AAAA... ansible@ctrl').
+    # Installed in administrators_authorized_keys, because the account is an administrator.
+    [string]$PublicKey,
     [string]$UpgraderUrl = 'https://raw.githubusercontent.com/Michdo93/ansible-windows-bootstrap/main/upgrader.ps1',
     [string]$InstallDirectory = "$env:ProgramData\Ansible"
 )
@@ -54,6 +57,11 @@ Get-Service -Name sshd -ErrorAction Stop | Out-Null
 Set-Service -Name sshd -StartupType Automatic
 $sshdConfig = Join-Path $env:ProgramData 'ssh\sshd_config'
 if (-not (Test-Path -LiteralPath $sshdConfig -PathType Leaf)) {
+    # sshd creates its default configuration and host keys on first start.
+    Start-Service -Name sshd
+    Start-Sleep -Seconds 2
+}
+if (-not (Test-Path -LiteralPath $sshdConfig -PathType Leaf)) {
     throw "OpenSSH configuration file was not found at $sshdConfig"
 }
 $configLines = @(Get-Content -LiteralPath $sshdConfig)
@@ -74,6 +82,13 @@ foreach ($line in $configLines) {
     }
 }
 if (-not $passwordAuthConfigured) { $updatedConfig.Add('PasswordAuthentication yes') }
+# Members of Administrators authenticate with ProgramData\ssh\administrators_authorized_keys
+# (Windows default). Restore the block if a customized configuration removed it.
+$adminKeysConfigured = @($updatedConfig | Where-Object { $_ -match '^\s*AuthorizedKeysFile\s+.*administrators_authorized_keys' }).Count -gt 0
+if (-not $adminKeysConfigured) {
+    $updatedConfig.Add('Match Group administrators')
+    $updatedConfig.Add('       AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys')
+}
 Set-Content -LiteralPath $sshdConfig -Value $updatedConfig -Encoding ascii
 $sshdExecutable = Join-Path $env:SystemRoot 'System32\OpenSSH\sshd.exe'
 if (-not (Test-Path -LiteralPath $sshdExecutable -PathType Leaf)) {
@@ -89,6 +104,23 @@ New-Item -Path $openSshRegistryPath -Force | Out-Null
 $powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) { throw "Windows PowerShell was not found at $powerShellPath" }
 New-ItemProperty -Path $openSshRegistryPath -Name DefaultShell -Value $powerShellPath -PropertyType String -Force | Out-Null
+
+if (-not [string]::IsNullOrWhiteSpace($PublicKey)) {
+    $PublicKey = $PublicKey.Trim()
+    $keyPattern = '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/=]+( .*)?$'
+    if ($PublicKey -notmatch $keyPattern -or $PublicKey.Contains("`n")) { throw 'The supplied value does not look like a supported SSH public key.' }
+    $adminKeys = Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
+    $keys = [System.Collections.Generic.List[string]]::new()
+    if (Test-Path -LiteralPath $adminKeys -PathType Leaf) {
+        foreach ($k in @(Get-Content -LiteralPath $adminKeys)) { if (-not [string]::IsNullOrWhiteSpace($k)) { $keys.Add($k.Trim()) } }
+    }
+    if (-not $keys.Contains($PublicKey)) { $keys.Add($PublicKey) }
+    Set-Content -LiteralPath $adminKeys -Value $keys -Encoding ascii
+    # sshd ignores this file unless only SYSTEM and Administrators have access (SIDs: language independent).
+    & icacls.exe $adminKeys /inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not set permissions on $adminKeys" }
+    Write-Host "Installed SSH public key in $adminKeys"
+}
 
 $sshService = Get-Service -Name sshd
 if ($sshService.Status -eq 'Running') {
